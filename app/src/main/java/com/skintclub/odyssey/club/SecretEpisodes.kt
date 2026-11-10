@@ -40,8 +40,21 @@ fun isSecretEpisodeId(id: String?): Boolean = id?.startsWith(SECRET_EPISODE_ID_P
 
 fun secretEpisodeId(path: String): String = "https://$ODYSSEY_MEDIA_HOST/$path"
 
-data class SecretEpisode(val path: String, val liked: Boolean = false) {
+/** A secret episode plus what the user has set for it on this device: [title] replaces the one
+ * guessed from the file name, [thumbnail] (an image URI - see [SecretEpisodeThumbnails]) is its
+ * artwork, and [album] puts it in that album (a club album's name to join it, or any other
+ * name to make an album of its own) as well as in "Secret Episodes". */
+data class SecretEpisode(
+    val path: String,
+    val liked: Boolean = false,
+    val title: String? = null,
+    val thumbnail: String? = null,
+    val album: String? = null,
+) {
     val id get() = secretEpisodeId(path)
+
+    /** The title shown for this episode: the user's own, or the one from the file name. */
+    val displayTitle get() = title?.takeIf { it.isNotBlank() } ?: secretEpisodeTitle(path)
 }
 
 data class SecretEpisodesState(
@@ -60,7 +73,7 @@ fun secretEpisodeNumber(path: String): Long? =
 /** A readable title from the file name: "1041-the-measure-of-a-patriot-part-2_Mp4_..." ->
  * "The Measure of a Patriot Part 2". The path is all there is to go on - the club has no
  * metadata for these. */
-private fun secretEpisodeTitle(path: String): String {
+fun secretEpisodeTitle(path: String): String {
     val fileName = path.substringAfterLast('/')
     val slug = fileName.substringBefore('_').substringBeforeLast('.').replace(leadingNumberRegex, "")
     val words = slug.split('-', ' ').filter { it.isNotBlank() }
@@ -73,17 +86,18 @@ private fun secretEpisodeTitle(path: String): String {
 /** The same episode-map shape the club's own episodes use, so every list, menu, queue and
  * download path handles a secret episode like any other. */
 fun secretEpisodeMap(episode: SecretEpisode): Map<String, Any> {
-    val title = secretEpisodeTitle(episode.path)
+    val title = episode.displayTitle
     val number = secretEpisodeNumber(episode.path)
+    val thumbnail = episode.thumbnail.orEmpty()
     return mapOf(
         "id" to episode.id,
         "name" to title,
         "short_name" to (number?.let { "#$it: $title" } ?: title),
-        "album_name" to SECRET_EPISODES_TITLE,
+        "album_name" to (episode.album?.takeIf { it.isNotBlank() } ?: SECRET_EPISODES_TITLE),
         "download_url" to episode.path,
-        "image_small" to "",
-        "image_medium" to "",
-        "image_large" to "",
+        "image_small" to thumbnail,
+        "image_medium" to thumbnail,
+        "image_large" to thumbnail,
         "is_bookmarked" to episode.liked,
         "secret" to true,
     )
@@ -99,7 +113,13 @@ class SecretEpisodesStore(private val context: Context) {
 
     // Gson fills fields reflectively, so a missing one comes back null even where the Kotlin
     // type says otherwise - hence nullable fields here, normalized in [decode].
-    private class PersistedEpisode(val path: String?, val liked: Boolean?)
+    private class PersistedEpisode(
+        val path: String?,
+        val liked: Boolean?,
+        val title: String? = null,
+        val thumbnail: String? = null,
+        val album: String? = null,
+    )
     private class Persisted(val episodes: List<PersistedEpisode>?, val playlistMembers: Map<String, List<String>>?)
 
     val state: Flow<SecretEpisodesState> = context.dataStore.data.map { decode(it[SecretEpisodesKey]) }
@@ -109,7 +129,7 @@ class SecretEpisodesStore(private val context: Context) {
             val updated = transform(decode(prefs[SecretEpisodesKey]))
             prefs[SecretEpisodesKey] = gson.toJson(
                 Persisted(
-                    episodes = updated.episodes.map { PersistedEpisode(it.path, it.liked) },
+                    episodes = updated.episodes.map { PersistedEpisode(it.path, it.liked, it.title, it.thumbnail, it.album) },
                     playlistMembers = updated.playlistMembers,
                 ),
             )
@@ -139,6 +159,24 @@ class SecretEpisodesStore(private val context: Context) {
         state.copy(episodes = state.episodes.map { if (it.id == id) it.copy(liked = liked) else it })
     }
 
+    /** Sets [id]'s own title, thumbnail and album; a blank or null value goes back to the default
+     * (the file-name title, no artwork, only in "Secret Episodes"). */
+    suspend fun setDetails(id: String, title: String?, thumbnail: String?, album: String?) = update { state ->
+        state.copy(
+            episodes = state.episodes.map {
+                if (it.id == id) {
+                    it.copy(
+                        title = title?.trim()?.takeIf(String::isNotBlank),
+                        thumbnail = thumbnail?.takeIf(String::isNotBlank),
+                        album = album?.trim()?.takeIf(String::isNotBlank),
+                    )
+                } else {
+                    it
+                }
+            },
+        )
+    }
+
     suspend fun addToPlaylist(playlistId: String, ids: List<String>) = update { state ->
         val existing = state.playlistMembers[playlistId].orEmpty()
         state.copy(playlistMembers = state.playlistMembers + (playlistId to (existing + ids).distinct()))
@@ -153,7 +191,15 @@ class SecretEpisodesStore(private val context: Context) {
             ?: return SecretEpisodesState()
         return SecretEpisodesState(
             episodes = persisted.episodes.orEmpty().mapNotNull { episode ->
-                episode.path?.let { SecretEpisode(it, episode.liked == true) }
+                episode.path?.let {
+                    SecretEpisode(
+                        path = it,
+                        liked = episode.liked == true,
+                        title = episode.title?.takeIf(String::isNotBlank),
+                        thumbnail = episode.thumbnail?.takeIf(String::isNotBlank),
+                        album = episode.album?.takeIf(String::isNotBlank),
+                    )
+                }
             },
             playlistMembers = persisted.playlistMembers.orEmpty(),
         )

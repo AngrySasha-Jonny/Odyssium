@@ -34,6 +34,9 @@ import com.skintclub.odyssey.ui.component.GridMenuItem
 import com.skintclub.odyssey.ui.component.MediaMetadataListItem
 import com.skintclub.odyssey.viewmodels.OdysseyViewModel
 
+/** Which of the secret-episode dialogs (see SecretEpisodeDialogs.kt) the menu has open. */
+private enum class SecretEpisodeDialog { Rename, Thumbnail, Album }
+
 @Composable
 fun OdysseyEpisodeMenu(
     navController: NavController,
@@ -50,6 +53,22 @@ fun OdysseyEpisodeMenu(
     val playerConnection = LocalPlayerConnection.current ?: return
     val download by LocalDownloadUtil.current.getDownload(mediaMetadata.id).collectAsState(initial = null)
     var showPlaylistPicker by remember { mutableStateOf(false) }
+    val secretState by viewModel.secretEpisodesState.collectAsState()
+    val secretEpisode = secretState.episodes.firstOrNull { it.id == mediaMetadata.id }
+    var secretDialog by remember { mutableStateOf<SecretEpisodeDialog?>(null) }
+
+    if (secretEpisode != null) {
+        val closeAll = {
+            secretDialog = null
+            onDismiss()
+        }
+        when (secretDialog) {
+            SecretEpisodeDialog.Rename -> RenameSecretEpisodeDialog(viewModel, secretEpisode, closeAll)
+            SecretEpisodeDialog.Thumbnail -> SecretEpisodeThumbnailDialog(viewModel, secretEpisode, closeAll)
+            SecretEpisodeDialog.Album -> SecretEpisodeAlbumDialog(viewModel, secretEpisode, closeAll)
+            null -> {}
+        }
+    }
 
     if (showPlaylistPicker) {
         OdysseyPlaylistPickerDialog(
@@ -158,6 +177,26 @@ fun OdysseyEpisodeMenu(
             title = R.string.add_to_playlist,
         ) {
             showPlaylistPicker = true
+        }
+        if (secretEpisode != null) {
+            GridMenuItem(
+                icon = R.drawable.edit,
+                title = R.string.rename,
+            ) {
+                secretDialog = SecretEpisodeDialog.Rename
+            }
+            GridMenuItem(
+                icon = R.drawable.image,
+                title = R.string.thumbnail,
+            ) {
+                secretDialog = SecretEpisodeDialog.Thumbnail
+            }
+            GridMenuItem(
+                icon = R.drawable.album,
+                title = R.string.add_to_album,
+            ) {
+                secretDialog = SecretEpisodeDialog.Album
+            }
         }
         if (isSecretEpisodeId(mediaMetadata.id)) {
             GridMenuItem(

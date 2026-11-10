@@ -17,6 +17,7 @@ import com.skintclub.odyssey.club.LocalPlaylistStore
 import com.skintclub.odyssey.club.PlaylistClubSync
 import com.skintclub.odyssey.club.PlaylistSyncResult
 import com.skintclub.odyssey.club.SecretEpisode
+import com.skintclub.odyssey.club.SecretEpisodeThumbnails
 import com.skintclub.odyssey.club.SecretEpisodesState
 import com.skintclub.odyssey.club.SecretEpisodesStore
 import com.skintclub.odyssey.club.VideoShelvesSnapshot
@@ -224,7 +225,21 @@ class OdysseyViewModel @Inject constructor(
     /** Albums in default order (unnumbered albums first), before [_sortDescending] is applied. */
     private var baseAlbums: List<OdysseyAlbum> = emptyList()
 
+    /** The club's own album episodes, last given to [applyEpisodes]; kept so the albums can be
+     * rebuilt when a secret episode's album changes without re-reading the groupings. */
+    private var clubAlbumEpisodes: List<Map<String, Any>> = emptyList()
+
     init {
+        viewModelScope.launch {
+            // A secret episode given an album (see SecretEpisode.album) shows in it, so the
+            // albums are rebuilt whenever the secret episodes' albums, titles or art change.
+            secretEpisodesState
+                .map { state -> state.episodes.filter { it.album != null } }
+                .distinctUntilChanged()
+                // Before the club's catalog has loaded there's nothing to rebuild yet (and an empty
+                // rebuild would overwrite the saved Home tiles); applyGroupings picks them up then.
+                .collect { if (_groupings.value.isNotEmpty()) applyEpisodes(clubAlbumEpisodes) }
+        }
         viewModelScope.launch {
             checkMembershipExpiry()
             val cached = clubClient.getCachedGroupings()
@@ -677,15 +692,32 @@ class OdysseyViewModel @Inject constructor(
     fun addSecretEpisode(input: String): Map<String, Any>? {
         val path = parseSecretEpisodePath(input) ?: return null
         viewModelScope.launch { secretEpisodesStore.add(path) }
-        val liked = secretEpisodesState.value.episodes.firstOrNull { it.path == path }?.liked == true
-        return secretEpisodeMap(SecretEpisode(path, liked))
+        val existing = secretEpisodesState.value.episodes.firstOrNull { it.path == path }
+        return secretEpisodeMap(existing ?: SecretEpisode(path))
     }
 
     /** Removes a secret episode from "Secret Episodes" (and every local playlist it was added
-     * to), deleting its download too - nothing else would list it anymore. */
+     * to), deleting its download and thumbnail too - nothing else would list it anymore. */
     fun removeSecretEpisode(id: String) {
         DownloadService.sendRemoveDownload(getApplication(), ExoDownloadService::class.java, id, false)
-        viewModelScope.launch { secretEpisodesStore.remove(id) }
+        val thumbnail = secretEpisodesState.value.episodes.firstOrNull { it.id == id }?.thumbnail
+        viewModelScope.launch {
+            secretEpisodesStore.remove(id)
+            SecretEpisodeThumbnails.delete(getApplication(), thumbnail)
+        }
+    }
+
+    /** The secret episode [id], or null if it isn't one (or was removed). */
+    fun secretEpisode(id: String): SecretEpisode? = secretEpisodesState.value.episodes.firstOrNull { it.id == id }
+
+    /** Renames secret episode [id], sets its thumbnail and puts it in [album] (null or blank
+     * for each goes back to the default). A thumbnail it no longer uses is deleted. */
+    fun setSecretEpisodeDetails(id: String, title: String?, thumbnail: String?, album: String?) {
+        val oldThumbnail = secretEpisode(id)?.thumbnail
+        viewModelScope.launch {
+            secretEpisodesStore.setDetails(id, title, thumbnail, album)
+            if (oldThumbnail != thumbnail) SecretEpisodeThumbnails.delete(getApplication(), oldThumbnail)
+        }
     }
 
     /** Secret episodes added to club playlist [playlistId] on this device. */
@@ -778,15 +810,23 @@ class OdysseyViewModel @Inject constructor(
     }
 
     private fun applyEpisodes(episodes: List<Map<String, Any>>) {
-        baseAlbums = episodes.groupBy { it["album_name"] as? String ?: "Unknown" }
+        clubAlbumEpisodes = episodes
+        // Secret episodes given an album follow the club's own episodes in it (or, for a name
+        // the club doesn't have, make up an album of their own).
+        val secretInAlbums = secretEpisodesState.value.episodes
+            .filter { it.album != null }
+            .map(::secretEpisodeMap)
+        baseAlbums = (episodes + secretInAlbums).groupBy { it["album_name"] as? String ?: "Unknown" }
             .map { (name, episodesInAlbum) ->
                 // image_large is the album's own cover (see ClubClient.albumEpisodesFrom) - the same
                 // one the album's page shows - whereas image_medium/small are the first
                 // episode's own thumbnail, which for some albums is episode-specific art.
-                val first = episodesInAlbum.firstOrNull()
-                val cover = (first?.get("image_large") as? String)?.takeIf { it.isNotBlank() }
-                    ?: (first?.get("image_medium") as? String)?.takeIf { it.isNotBlank() }
-                    ?: (first?.get("image_small") as? String)?.takeIf { it.isNotBlank() }
+                fun art(episode: Map<String, Any>?) =
+                    (episode?.get("image_large") as? String)?.takeIf { it.isNotBlank() }
+                        ?: (episode?.get("image_medium") as? String)?.takeIf { it.isNotBlank() }
+                        ?: (episode?.get("image_small") as? String)?.takeIf { it.isNotBlank() }
+                // An album made only of secret episodes takes the first thumbnail any of them has.
+                val cover = art(episodesInAlbum.firstOrNull()) ?: episodesInAlbum.firstNotNullOfOrNull(::art)
                 OdysseyAlbum(name, episodesInAlbum, cover)
             }
             .sortedWith(albumOrderComparator)
