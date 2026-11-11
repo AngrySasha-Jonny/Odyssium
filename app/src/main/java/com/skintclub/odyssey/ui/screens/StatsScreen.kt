@@ -44,6 +44,7 @@ import com.skintclub.odyssey.ui.component.IconButton
 import com.skintclub.odyssey.ui.component.LocalMenuState
 import com.skintclub.odyssey.ui.component.NavigationTitle
 import com.skintclub.odyssey.ui.component.SongListItem
+import com.skintclub.odyssey.ui.component.rememberCurrentSecretEpisodeSong
 import com.skintclub.odyssey.ui.menu.SongMenu
 import com.skintclub.odyssey.ui.utils.backToMain
 import com.skintclub.odyssey.viewmodels.ListeningStats
@@ -73,6 +74,7 @@ fun StatsScreen(
     val clubHistory by odysseyViewModel.clubHistory.collectAsState()
     // From the club's progress when the selected profile has any, else what this app recorded.
     val clubTotalMs = clubHistory.totalListeningMs.takeIf { clubHistory.progress.isNotEmpty() }
+    val current = rememberCurrentSecretEpisodeSong(odysseyViewModel)
 
     LazyColumn(
         contentPadding =
@@ -136,8 +138,9 @@ fun StatsScreen(
             items = s.topEpisodes,
             key = { _, episode -> episode.song.id },
         ) { _, episode ->
+            val song = current(episode.song)
             SongListItem(
-                song = episode.song,
+                song = song,
                 isActive = episode.song.id == mediaMetadata?.id,
                 isPlaying = isPlaying,
                 trailingContent = {
@@ -166,7 +169,7 @@ fun StatsScreen(
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 menuState.show {
                                     SongMenu(
-                                        originalSong = episode.song,
+                                        originalSong = song,
                                         navController = navController,
                                         onDismiss = menuState::dismiss,
                                     )

@@ -59,6 +59,14 @@ data class TranscriptMatch(
     val matchEnd: Int,
 )
 
+/** A search's [matches] to show (the first few hundred), and how many lines in how many
+ * episodes match in all. */
+data class TranscriptSearchResults(
+    val matches: List<TranscriptMatch>,
+    val totalLines: Int,
+    val totalEpisodes: Int,
+)
+
 sealed interface TranscriptSearchState {
     data class Indexing(val done: Int, val total: Int) : TranscriptSearchState
     class Ready(val episodes: Map<String, TranscriptSearchEpisode>) : TranscriptSearchState
@@ -141,7 +149,8 @@ object TranscriptSearch {
     }
 
     /**
-     * Lines of [episodes] (in that order) containing [rawQuery], at most [limit] of them.
+     * Lines of [episodes] (in that order) containing [rawQuery]: the first [limit] of them as
+     * [TranscriptMatch]es to show, plus how many lines and episodes match in all.
      * Forgiving about how it's typed (see [normalizeQuery]): case, apostrophes and punctuation
      * don't matter, so "its over For now" finds "It's over. For now...". Checks for
      * cancellation as it goes so a newer keystroke can replace it.
@@ -151,25 +160,31 @@ object TranscriptSearch {
         episodeOrder: List<String>,
         rawQuery: String,
         limit: Int = 300,
-    ): List<TranscriptMatch> {
+    ): TranscriptSearchResults {
         val query = normalizeQuery(rawQuery)
-        if (query.length < 2) return emptyList()
+        if (query.length < 2) return TranscriptSearchResults(emptyList(), 0, 0)
         val results = ArrayList<TranscriptMatch>()
+        var totalLines = 0
+        var totalEpisodes = 0
         for (id in episodeOrder) {
             coroutineContext.ensureActive()
             val episode = index[id] ?: continue
             val text = episode.text
             var from = 0
-            while (results.size < limit) {
+            var linesHere = 0
+            while (true) {
                 val (at, end) = findLoosely(text, query, from) ?: break
                 val line = episode.lineOf(at)
-                results.add(matchIn(episode, line, at, end))
+                // Past the limit lines are only counted - building a snippet for each would be wasted.
+                if (results.size < limit) results.add(matchIn(episode, line, at, end))
+                linesHere++
                 // One result per line, however often it says it.
                 from = episode.lineEnd(line) + 1
             }
-            if (results.size >= limit) break
+            totalLines += linesHere
+            if (linesHere > 0) totalEpisodes++
         }
-        return results
+        return TranscriptSearchResults(results, totalLines, totalEpisodes)
     }
 
     private fun matchIn(episode: TranscriptSearchEpisode, line: Int, at: Int, end: Int): TranscriptMatch {

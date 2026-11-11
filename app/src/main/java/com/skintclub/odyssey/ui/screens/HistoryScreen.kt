@@ -31,8 +31,7 @@ import androidx.navigation.NavController
 import com.skintclub.odyssey.LocalPlayerAwareWindowInsets
 import com.skintclub.odyssey.LocalPlayerConnection
 import com.skintclub.odyssey.R
-import com.skintclub.odyssey.club.secretEpisodeMap
-import com.skintclub.odyssey.db.entities.Song
+import com.skintclub.odyssey.ui.component.rememberCurrentSecretEpisodeSong
 import com.skintclub.odyssey.extensions.togglePlayPause
 import com.skintclub.odyssey.playback.queues.OdysseyQueue
 import com.skintclub.odyssey.playback.queues.odysseyEpisodeToMediaItem
@@ -78,20 +77,7 @@ fun HistoryScreen(
     val resumeFromHistory by rememberPreference(ResumeFromHistoryKey, defaultValue = true)
     val searchIndex by odysseyViewModel.searchIndex.collectAsState()
     val episodeById = remember(searchIndex) { searchIndex.episodes.associateBy { it.episode["id"] as? String } }
-    val secretState by odysseyViewModel.secretEpisodesState.collectAsState()
-    val secretById = remember(secretState) { secretState.episodes.associateBy { it.id } }
-
-    /** A played secret episode as it's set up now: the database row keeps the title and art it
-     * had when it was played, but a rename, thumbnail or album set since should show here too. */
-    fun current(song: Song): Song {
-        val secret = secretById[song.id] ?: return song
-        val metadata = odysseyEpisodeToMediaMetadata(context, secretEpisodeMap(secret))
-        val albumName = metadata.album?.title
-        return song.copy(
-            song = song.song.copy(title = metadata.title, thumbnailUrl = metadata.thumbnailUrl),
-            artists = if (albumName == null) song.artists else song.artists.map { it.copy(name = albumName) },
-        )
-    }
+    val current = rememberCurrentSecretEpisodeSong(odysseyViewModel)
 
     /** Plays [episode] in its album (or grouping), from the saved position when there's one
      * to resume. */
@@ -142,7 +128,7 @@ fun HistoryScreen(
                 when (item) {
                     is HistoryItem.Played -> {
                         val event = item.event
-                        val song = remember(event.song, secretById) { current(event.song) }
+                        val song = current(event.song)
                         val showMenu = {
                             menuState.show {
                                 SongMenu(
